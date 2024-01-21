@@ -1034,6 +1034,13 @@ initialize_SSL(PGconn *conn)
 			return -1;
 		}
 	}
+    /* OPTIONAL: Enable OCSP-Stapling! */
+	libpq_append_conn_error(conn, "==> mydebugging before enable OCSP....");
+    if (SSL_CTX_set_tlsext_status_type(SSL_context, TLSEXT_STATUSTYPE_ocsp) != 1) {
+    	libpq_append_conn_error(conn, "Function 'SSL_CTX_set_tlsext_status_type' has failed!");
+    	return -1;
+    }
+    libpq_append_conn_error(conn, "==> mydebugging AFTER enable OCSP....");
 
 	/*
 	 * Disable OpenSSL's moving-write-buffer sanity check, because it causes
