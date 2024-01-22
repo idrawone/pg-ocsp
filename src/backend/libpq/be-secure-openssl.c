@@ -388,6 +388,7 @@ be_tls_init(bool isServerStart)
         }
         /* enable OCSP stapling */
         SSL_CTX_set_tlsext_status_cb(context, add_ocsp_data_cb);
+        ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> mydebugging: OCSP stapling enabled ...")));
 
 //		OCSP_RESPONSE *ocsp_response = obtain_ocsp_response(server_cert);
 //		if (ocsp_response)
@@ -1716,17 +1717,20 @@ int get_ocsp(char *filename, unsigned char **ocsp) {
     ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> filename is NULL .. ")));
     return 0;
   }
+  ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> get_ocsp: filename: %s", filename)));
 
   if ((bio = BIO_new_file(filename, "r")) == NULL) {
     ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> get_ocsp: BIO_new_file failed .. ")));
     return -1;
   }
+  ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> get_ocsp: BIO_new_file")));
 
   if ((response = d2i_OCSP_RESPONSE_bio(bio, NULL)) == NULL) {
 	  ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> get_ocsp: d2i_OCSP_RESPONSE_bio failed .. ")));
     BIO_free(bio);
     return -2;
   }
+  ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> get_ocsp: d2i_OCSP_RESPONSE_bio")));
 
   if ((len = i2d_OCSP_RESPONSE(response, NULL)) <= 0) {
 	  ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==>get_ocsp: i2d_OCSP_RESPONSE #1 failed .. ")));
@@ -1734,12 +1738,14 @@ int get_ocsp(char *filename, unsigned char **ocsp) {
     BIO_free(bio);
     return -3;
   }
+  ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> get_ocsp: i2d_OCSP_RESPONSE")));
 
   if ((buf = malloc((size_t) len)) == NULL) {
 	  ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==>get_ocsp: malloc failed .. ")));
     BIO_free(bio);
     return -4;
   }
+  ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> get_ocsp: malloc")));
 
   p = buf;
   if ((len = i2d_OCSP_RESPONSE(response, &p)) <= 0) {
@@ -1749,11 +1755,12 @@ int get_ocsp(char *filename, unsigned char **ocsp) {
     BIO_free(bio);
     return -5;
   }
+  ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> get_ocsp: i2d_OCSP_RESPONSE .. ")));
 
   OCSP_RESPONSE_free(response);
   BIO_free(bio);
 
-  ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==>get_ocsp: octets .. ")));
+  ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> get_ocsp: done .. ")));
 
   *ocsp = buf;
   return len;
@@ -1771,6 +1778,7 @@ static int add_ocsp_data_cb(SSL *s, void *arg __attribute__((unused)))
             ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==>add_ocsp_data_cb: malloc .. ")));
             return SSL_TLSEXT_ERR_NOACK;
         }
+        ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> OK: add_ocsp_data_cb: malloc .. ")));
 
         memcpy(p, ocsp, ocsp_len);
         if ((SSL_set_tlsext_status_ocsp_resp(s, p, ocsp_len)) != 1)
@@ -1778,6 +1786,7 @@ static int add_ocsp_data_cb(SSL *s, void *arg __attribute__((unused)))
         	ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> SSL_set_tlsext_status_ocsp_resp .. ")));
             return SSL_TLSEXT_ERR_NOACK;
         }
+        ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> OK: SSL_set_tlsext_status_ocsp_resp .. ")));
 
         return SSL_TLSEXT_ERR_OK;
     } else
