@@ -1038,30 +1038,27 @@ initialize_SSL(PGconn *conn)
 			return -1;
 		}
 	}
-	//TODO: OCSP enable request
-    /* OPTIONAL: Enable OCSP-Stapling! */
-	printf( "\n==> mydebugging BEFORE enable OCSP....");
-    if (SSL_CTX_set_tlsext_status_type(SSL_context, TLSEXT_STATUSTYPE_ocsp) != 1) {
-    	printf( "\n==> Function 'SSL_CTX_set_tlsext_status_type' has failed!");
-    	return -1;
-    }
-    // - - - - - - - - - - - - - - - - - - - - - - - - -
-    /* OPTIONAL: Set custom verification callback */
-    // - - - - - - - - - - - - - - - - - - - - - - - - -
-    /* Function callback called during the TLS handshake after the certificate chain has been verified. */
-    /* Mainly designed for checking the result of stapled OCSP Response. */
-//    int (*callback)(SSL *) = &ocsp_stapling_check;
-    printf( "\n==> mydebugging set ocsp_stapling_check callback ...");
-    SSL_CTX_set_tlsext_status_cb(SSL_context, ocsp_stapling_check);
-
-    printf( "\n==> mydebugging AFTER enable OCSP....");
-
 
 	/*
 	 * Disable OpenSSL's moving-write-buffer sanity check, because it causes
 	 * unnecessary failures in nonblocking send cases.
 	 */
 	SSL_CTX_set_mode(SSL_context, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+
+    /* TODO: Enable OCSP-Stapling! */
+	printf( "\n==> mydebugging BEFORE enable OCSP....");
+    if (SSL_CTX_set_tlsext_status_type(SSL_context, TLSEXT_STATUSTYPE_ocsp) != 1) {
+    	printf( "\n==> Function 'SSL_CTX_set_tlsext_status_type' has failed!");
+    	return -1;
+    }
+    /* OPTIONAL: Set custom verification callback */
+    /* Function callback called during the TLS handshake after the certificate chain has been verified. */
+    /* Mainly designed for checking the result of stapled OCSP Response. */
+    printf( "\n==> mydebugging set ocsp_stapling_check callback ...");
+    SSL_CTX_set_tlsext_status_cb(SSL_context, ocsp_stapling_check);
+
+    printf( "\n==> mydebugging AFTER enable OCSP....");
+
 
 	/*
 	 * If the root cert file exists, load it so we can perform certificate
@@ -2160,18 +2157,6 @@ void print_x509_certificate_chain_info(SSL *s_connection) {
     }
 }
 
-void print_x509_store_chain_info(STACK_OF(X509) *store) {
-    /* struct x509_extension_t -> typedef X509_EXTENSION -> in stack as STACK_OF(X509_EXTENSION) -> typedef X509_EXTENSIONS */
-
-    printf("\nStore chain details: \n");
-
-    for (int index = 0; index < 1; index++) {
-        X509 *current_certificate = sk_X509_value(store, index);
-        printf("\nPrinting information about store at index: %d\n", index);
-        print_x509_certificate_info(current_certificate);
-    }
-}
-
 int parse_revocation_check_from_basic_resp_through_single_resp(OCSP_BASICRESP *ocsp_response_basic) {
     // - - - - - - - - - - - - - - - - - - - - - - - -
     /* ALTERNATIVE */
@@ -2187,7 +2172,7 @@ int parse_revocation_check_from_basic_resp_through_single_resp(OCSP_BASICRESP *o
     ASN1_GENERALIZEDTIME *nextupd;
 
     int number_of_single_responses = OCSP_resp_count(ocsp_response_basic);
-    printf("- number of single responses in OCSP basic response: %d\n", number_of_single_responses);
+    printf("\n==> mydebugging - number of single responses in OCSP basic response: %d\n", number_of_single_responses);
 
     OCSP_SINGLERESP *one_response;
     for (int index = 0; index < number_of_single_responses; index ++) {
@@ -2227,6 +2212,7 @@ int verify_ocsp_response_signature(OCSP_RESPONSE *ocsp_response, STACK_OF(X509) 
     int status = REVOC_CHECK_SUCCESS;
 
     X509_STORE *store = NULL;
+    X509_LOOKUP *lookup;
 
     /* Check the status of retrieved OCSP response, if it is not malformed or invalid for some other reason. */
     if (OCSP_response_status(ocsp_response) != OCSP_RESPONSE_STATUS_SUCCESSFUL) {
@@ -2251,14 +2237,21 @@ int verify_ocsp_response_signature(OCSP_RESPONSE *ocsp_response, STACK_OF(X509) 
         goto cleanup;
     }
 
-    //TODO: check PG to confirm the trust store setup
-    printf("\n==> mydebugging: default CA path: %s", X509_get_default_cert_dir());
-    printf("\n==> mydebugging: default CA file: %s", X509_get_default_cert_file());
-//    if (X509_STORE_set_default_paths(store) != 1) {
-//        fprintf(stderr, "Function 'X509_STORE_set_default_paths' has failed!\n");
-//        status = REVOC_CHECK_INTERNAL_ERROR;
+//    lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
+//    if (lookup == NULL)
+//    	goto cleanup;
+//	if (X509_LOOKUP_load_file(lookup, "rootCA.crt", X509_FILETYPE_PEM) <= 0)
+//	{
+//        fprintf(stderr, "Error loading file %s\n", "rootCA.crt");
 //        goto cleanup;
 //    }
+
+    //TODO: check PG to confirm the trust store setup
+    if (X509_STORE_set_default_paths(store) != 1) {
+        fprintf(stderr, "Function 'X509_STORE_set_default_paths' has failed!\n");
+        status = REVOC_CHECK_INTERNAL_ERROR;
+        goto cleanup;
+    }
 
     /* Add the self-signed CA certificate to the store. */
     X509 *rootCA_cert = NULL;
@@ -2276,16 +2269,12 @@ int verify_ocsp_response_signature(OCSP_RESPONSE *ocsp_response, STACK_OF(X509) 
         goto cleanup;
     }
     BIO_free(bio);
-
     if (X509_STORE_add_cert(store, rootCA_cert) != 1) {
         fprintf(stderr, "Error adding the rootCA certificate to the store!\n");
         status = REVOC_CHECK_INTERNAL_ERROR;
         X509_free(rootCA_cert);
         goto cleanup;
     }
-    printf("\n==> mydebugging: after CA path: %s", X509_get_default_cert_dir());
-    printf("\n==> mydebugging: after CA file: %s", X509_get_default_cert_file());
-
     X509_free(rootCA_cert);
 
     /* Verify the signature of basic OCSP Response with validation of issuer's certificate. */
@@ -2337,7 +2326,7 @@ int ocsp_stapling_check(SSL *s_connection) {
     	printf("\n- client does not previously requested the OCSP-stapling!\n");
         return REVOC_CHECK_SUCCESS;
     }
-    printf("\n ==> mydebugging - client does previously requested the OCSP-stapling\n");
+    printf("\n ==> mydebugging - client does previously requested the OCSP-stapling");
 
     /* Retrieve the stapled OCSP response, after or during the TLS handshake. */
     char *ocsp_response_stapled_DER;
@@ -2346,7 +2335,7 @@ int ocsp_stapling_check(SSL *s_connection) {
     	printf("- server did not send the stapled OCSP Response!\n");
         return REVOC_CHECK_SUCCESS;
     }
-    printf("\n ==> mydebugging - server do send the stapled OCSP Response!\n");
+    printf("\n ==> mydebugging - server do send the stapled OCSP Response!");
 
     /* Convert the retrieved stapled OCSP Response to the OpenSSL native structure. */
     OCSP_RESPONSE *stapled_ocsp_response = d2i_OCSP_RESPONSE(NULL, (const unsigned char **) &ocsp_response_stapled_DER, ocsp_response_stapled_size);
@@ -2354,7 +2343,7 @@ int ocsp_stapling_check(SSL *s_connection) {
     	printf("Function 'd2i_OCSP_RESPONSE' has failed!\n");
         return REVOC_CHECK_INTERNAL_ERROR;
     }
-    printf("\n ==> mydebugging - Function 'd2i_OCSP_RESPONSE' has passed!\n");
+    printf("\n ==> mydebugging - Function 'd2i_OCSP_RESPONSE' has passed!");
 
 
     /* Save the retrieved stapled OCSP response to the file, possible to examine. */
@@ -2369,28 +2358,29 @@ int ocsp_stapling_check(SSL *s_connection) {
         status = REVOC_CHECK_FAILURE;
         goto cleanup;
     }
-    printf("\n ==> mydebugging - retrieve_server_certificate_chain done... \n");
+    printf("\n ==> mydebugging - retrieve_server_certificate_chain done... ");
 
     /* Verify the signature of the retrieved Stapled OCSP Response. */
     status = verify_ocsp_response_signature(stapled_ocsp_response, cert_chain_stack, &stapled_ocsp_response_basic);
     if (status != REVOC_CHECK_SUCCESS) {
         goto cleanup;
     }
-    printf("\n ==> mydebugging - verify_ocsp_response_signature done... \n");
+    printf("\n ==> mydebugging - verify_ocsp_response_signature done... ");
 
     /* Find out the revocation status for every certificate included in the stapled OCSP Response. */
     status = parse_revocation_check_from_basic_resp_through_single_resp(stapled_ocsp_response_basic);
     if (status != REVOC_CHECK_SUCCESS) {
         goto cleanup;
     }
-    printf("\n ==> mydebugging - parse_revocation_check_from_basic_resp_through_single_resp done... \n");
+    printf("\n ==> mydebugging - parse_revocation_check_from_basic_resp_through_single_resp done... ");
 
     /* Deinitialize. */
     OCSP_RESPONSE_free(stapled_ocsp_response);
     OCSP_BASICRESP_free(stapled_ocsp_response_basic);
 
-    printf("\n ==> mydebugging - free memory is done... \n");
-    return status;
+    printf("\n ==> mydebugging - free memory is done... status=%d, :D \n\n", status);
+    //TODO: PG expects 1 as success
+    return 1;
 
 cleanup:
     if (stapled_ocsp_response != NULL) {
