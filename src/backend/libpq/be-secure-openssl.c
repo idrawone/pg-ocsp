@@ -431,11 +431,8 @@ be_tls_open_server(Port *port)
 		return -1;
 	}
 
-	if ( ssl_ocsp_file[0] )
-	{
-        SSL_CTX_set_tlsext_status_cb(SSL_context, ocsp_stapling_cb);
-//        ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> mydebugging: OCSP stapling enabled ...")));
-	}
+	/* setup ocsp stapling callback */
+	SSL_CTX_set_tlsext_status_cb(SSL_context, ocsp_stapling_cb);
 
 	/* set up debugging/info callback */
 	SSL_CTX_set_info_callback(SSL_context, info_cb);
@@ -578,7 +575,6 @@ aloop:
 		}
 		return -1;
 	}
-
 
 	/* Get client certificate, if available. */
 	port->peer = SSL_get_peer_certificate(port->ssl);
@@ -1663,7 +1659,10 @@ default_openssl_tls_init(SSL_CTX *context, bool isServerStart)
 	}
 }
 
-
+/*
+ * Sets OCSP response for stapling in TLS certificate status extension
+ * if client requests certificate status check and server has ssl_ocsp_file
+ */
 static int ocsp_stapling_cb(SSL *ssl)
 {
 	int				resp_len = -1;
@@ -1671,44 +1670,61 @@ static int ocsp_stapling_cb(SSL *ssl)
 	OCSP_RESPONSE	*resp = NULL;
 	unsigned char 	*rspder = NULL;
 
+	/* return, if ssl_ocsp_file not enabled on server */
 	if (ssl_ocsp_file == NULL)
 	{
-		ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> ssl_ocsp_file is NULL .. ")));
+		ereport(WARNING,
+				(errcode(ERRCODE_CONFIG_FILE_ERROR),
+				 errmsg("could not find ssl_ocsp_file")));
 		return SSL_TLSEXT_ERR_NOACK;
 	}
-	ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> resp_file: %s", ssl_ocsp_file)));
 
-	bio = BIO_new_file(ssl_ocsp_file, "r");
-	if (bio == NULL)
+	/* determine whether the client requested OCSP stapling */
+	if (SSL_get_tlsext_status_type(ssl) == TLSEXT_STATUSTYPE_ocsp)
 	{
-		ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> BIO_new_file failed .. ")));
-		return SSL_TLSEXT_ERR_NOACK;
-	}
-	ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> BIO_new_file")));
+		ereport(WARNING,
+				(errcode(ERRCODE_CONFIG_FILE_ERROR),
+				errmsg("==> mydebugging: psql enabled ocsp stapling check")));
 
-	resp = d2i_OCSP_RESPONSE_bio(bio, NULL);
-	BIO_free(bio);
-	if (resp == NULL)
-	{
-		ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> d2i_OCSP_RESPONSE_bio failed .. ")));
-		return SSL_TLSEXT_ERR_NOACK;
-	}
-	ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> d2i_OCSP_RESPONSE_bio")));
+		bio = BIO_new_file(ssl_ocsp_file, "r");
+		if (bio == NULL)
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("could not read ssl_ocsp_file")));
+			return SSL_TLSEXT_ERR_NOACK;
+		}
 
-	resp_len = i2d_OCSP_RESPONSE(resp, &rspder);
-	OCSP_RESPONSE_free(resp);
-	if (resp_len <= 0)
-	{
-		ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> i2d_OCSP_RESPONSE #1 failed .. ")));
-		return SSL_TLSEXT_ERR_NOACK;
-	}
-	ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> i2d_OCSP_RESPONSE")));
+		resp = d2i_OCSP_RESPONSE_bio(bio, NULL);
+		BIO_free(bio);
+		if (resp == NULL)
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("could not convert ocsp response to interl format")));
+			return SSL_TLSEXT_ERR_NOACK;
+		}
 
-	if (SSL_set_tlsext_status_ocsp_resp(ssl, rspder, resp_len) != 1)
-	{
-    	ereport(WARNING, (errcode(ERRCODE_PROTOCOL_VIOLATION), errmsg("==> SSL_set_tlsext_status_ocsp_resp .. ")));
-        return SSL_TLSEXT_ERR_NOACK;
+		resp_len = i2d_OCSP_RESPONSE(resp, &rspder);
+		OCSP_RESPONSE_free(resp);
+		if (resp_len <= 0)
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("could not convert ocsp response to der format")));
+			return SSL_TLSEXT_ERR_NOACK;
+		}
+
+		if (SSL_set_tlsext_status_ocsp_resp(ssl, rspder, resp_len) != 1)
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("could not set ocsp stapling")));
+			return SSL_TLSEXT_ERR_NOACK;
+		}
+
+		return SSL_TLSEXT_ERR_OK;
 	}
 
-	return SSL_TLSEXT_ERR_OK;
+	return SSL_TLSEXT_ERR_NOACK;
 }

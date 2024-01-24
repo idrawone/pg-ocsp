@@ -1628,14 +1628,6 @@ open_client_SSL(PGconn *conn)
 		return PGRES_POLLING_FAILED;
 	}
 
-//	// TODO OCSP response check
-//	if ( ocsp_stapling_check(conn->ssl) != REVOC_CHECK_SUCCESS )
-//	{
-//		libpq_append_conn_error(conn, "==> psql: ocsp stapling check failed ... ");
-//		pgtls_close(conn);
-//		return PGRES_POLLING_FAILED;
-//	}
-
 	/* SSL handshake is complete */
 	return PGRES_POLLING_OK;
 }

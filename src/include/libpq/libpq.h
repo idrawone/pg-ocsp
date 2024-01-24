@@ -89,11 +89,11 @@ extern bool pq_check_connection(void);
  */
 extern PGDLLIMPORT char *ssl_library;
 extern PGDLLIMPORT char *ssl_cert_file;
+extern PGDLLIMPORT char *ssl_ocsp_file;
 extern PGDLLIMPORT char *ssl_key_file;
 extern PGDLLIMPORT char *ssl_ca_file;
 extern PGDLLIMPORT char *ssl_crl_file;
 extern PGDLLIMPORT char *ssl_crl_dir;
-extern PGDLLIMPORT char *ssl_ocsp_file;
 extern PGDLLIMPORT char *ssl_dh_params_file;
 extern PGDLLIMPORT char *ssl_passphrase_command;
 extern PGDLLIMPORT bool ssl_passphrase_command_supports_reload;
