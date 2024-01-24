@@ -100,7 +100,7 @@ static long win32_ssl_create_mutex = 0;
 
 static PQsslKeyPassHook_OpenSSL_type PQsslKeyPassHook = NULL;
 static int	ssl_protocol_version_to_openssl(const char *protocol);
-int ocsp_stapling_check(SSL *s_connection);
+static int ocsp_stapling_check(SSL *ssl);
 #define REVOC_CHECK_SUCCESS 1
 #define REVOC_CHECK_FAILURE 0
 #define REVOC_CHECK_INTERNAL_ERROR 2
@@ -2100,16 +2100,16 @@ ssl_protocol_version_to_openssl(const char *protocol)
 
 
 
-STACK_OF(X509) *retrieve_server_certificate_chain(SSL *s_connection, int *cert_chain_stack_size, bool useVerified)
+STACK_OF(X509) *retrieve_server_certificate_chain(SSL *ssl, int *cert_chain_stack_size, bool useVerified)
 {
     /* Retrieve the server's certificate chain from the OpenSSL connection. */
     /* Another option: SSL_get0_verified_chain() */
     STACK_OF(X509) *cert_chain_stack = NULL;
     if (useVerified) {
-        cert_chain_stack = SSL_get0_verified_chain(s_connection);
+        cert_chain_stack = SSL_get0_verified_chain(ssl);
     }
     else {
-        cert_chain_stack = SSL_get_peer_cert_chain(s_connection);
+        cert_chain_stack = SSL_get_peer_cert_chain(ssl);
     }
 
     if (cert_chain_stack == NULL) {
@@ -2143,7 +2143,7 @@ void print_x509_certificate_info(X509 *certificate)
     free(issuer_name_oneline);
 }
 
-void print_x509_certificate_chain_info(SSL *s_connection)
+void print_x509_certificate_chain_info(SSL *ssl)
 {
     /* struct x509_extension_t -> typedef X509_EXTENSION -> in stack as STACK_OF(X509_EXTENSION) -> typedef X509_EXTENSIONS */
 
@@ -2151,7 +2151,7 @@ void print_x509_certificate_chain_info(SSL *s_connection)
 
     /* Get the certificate chain sent by the peer */
     int cert_chain_stack_size;
-    STACK_OF(X509) *cert_chain_stack = retrieve_server_certificate_chain(s_connection, &cert_chain_stack_size, false);
+    STACK_OF(X509) *cert_chain_stack = retrieve_server_certificate_chain(ssl, &cert_chain_stack_size, false);
     if (cert_chain_stack == NULL) {
         return;
     }
@@ -2313,50 +2313,41 @@ void save_OCSP_request_to_file(OCSP_REQUEST *ocsp_request, char *filename) {
     BIO_free(file);
 }
 
-void save_OCSP_response_to_file(OCSP_RESPONSE *ocsp_response, char *filename) {
-    BIO *file = BIO_new_file(filename, "wb");
-    i2d_OCSP_RESPONSE_bio(file, ocsp_response);
-    BIO_free(file);
-}
+static int ocsp_stapling_check(SSL *ssl)
+{
+	int status = REVOC_CHECK_SUCCESS;
+	OCSP_BASICRESP *stapled_ocsp_response_basic = NULL;
 
-int ocsp_stapling_check(SSL *s_connection) {
-    int status = REVOC_CHECK_SUCCESS;
-    OCSP_BASICRESP *stapled_ocsp_response_basic = NULL;
-
-//    printf("\n*** Performing OCSP-Stapling check! ***\n");
-
-    if (SSL_get_tlsext_status_type(s_connection) == -1) {
+	/* check if sent ocsp request */
+	if (SSL_get_tlsext_status_type(ssl) != TLSEXT_STATUSTYPE_ocsp)
+	{
     	printf("\n- client does not previously requested the OCSP-stapling!\n");
         return REVOC_CHECK_SUCCESS;
     }
-//    printf("\n ==> mydebugging - client does previously requested the OCSP-stapling");
 
-    /* Retrieve the stapled OCSP response, after or during the TLS handshake. */
-    char *ocsp_response_stapled_DER;
-    long ocsp_response_stapled_size = SSL_get_tlsext_status_ocsp_resp(s_connection, &ocsp_response_stapled_DER);
-    if (ocsp_response_stapled_size == -1) {
-//    	printf("- server did not send the stapled OCSP Response!\n");
+    /* get stapled OCSP response */
+    char *ocsp_resp;
+    long ocsp_resp_len = SSL_get_tlsext_status_ocsp_resp(ssl, &ocsp_resp);
+    if (ocsp_resp_len == -1)
+    {
+    	printf("- server did not send the stapled OCSP Response!\n");
         return REVOC_CHECK_SUCCESS;
     }
-//    printf("\n ==> mydebugging - server do send the stapled OCSP Response!");
 
-    /* Convert the retrieved stapled OCSP Response to the OpenSSL native structure. */
-    OCSP_RESPONSE *stapled_ocsp_response = d2i_OCSP_RESPONSE(NULL, (const unsigned char **) &ocsp_response_stapled_DER, ocsp_response_stapled_size);
-    if (stapled_ocsp_response == NULL) {
+    /* convert OCSP Response from der to internal format */
+    OCSP_RESPONSE *stapled_ocsp_response = d2i_OCSP_RESPONSE(NULL, &ocsp_resp, ocsp_resp_len);
+    if (stapled_ocsp_response == NULL)
+    {
     	printf("Function 'd2i_OCSP_RESPONSE' has failed!\n");
         return REVOC_CHECK_INTERNAL_ERROR;
     }
-//    printf("\n ==> mydebugging - Function 'd2i_OCSP_RESPONSE' has passed!");
 
-
-    /* Save the retrieved stapled OCSP response to the file, possible to examine. */
-    save_OCSP_response_to_file(stapled_ocsp_response, "ocsp_resp_stapled_psql.der");
 
     /* Verify and parse the OCSP stapled Response! */
-//    print_x509_certificate_chain_info(s_connection);
+//    print_x509_certificate_chain_info(ssl);
     /* Retrieve the server's certificate chain from the OpenSSL connection. */
     int cert_chain_stack_size;
-    STACK_OF(X509) *cert_chain_stack = retrieve_server_certificate_chain(s_connection, &cert_chain_stack_size, false);
+    STACK_OF(X509) *cert_chain_stack = retrieve_server_certificate_chain(ssl, &cert_chain_stack_size, false);
     if (cert_chain_stack == NULL) {
         status = REVOC_CHECK_FAILURE;
         goto cleanup;
@@ -2377,11 +2368,9 @@ int ocsp_stapling_check(SSL *s_connection) {
     }
 //    printf("\n ==> mydebugging - parse_revocation_check_from_basic_resp_through_single_resp done... ");
 
-    /* Deinitialize. */
     OCSP_RESPONSE_free(stapled_ocsp_response);
     OCSP_BASICRESP_free(stapled_ocsp_response_basic);
 
-//    printf("\n ==> mydebugging - free memory is done... status=%d, :D \n\n", status);
     //TODO: PG expects 1 as success
     return REVOC_CHECK_SUCCESS;
 
