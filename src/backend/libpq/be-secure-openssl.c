@@ -1682,10 +1682,6 @@ static int ocsp_stapling_cb(SSL *ssl)
 	/* determine whether the client requested OCSP stapling */
 	if (SSL_get_tlsext_status_type(ssl) == TLSEXT_STATUSTYPE_ocsp)
 	{
-		ereport(WARNING,
-				(errcode(ERRCODE_CONFIG_FILE_ERROR),
-				errmsg("==> mydebugging: psql enabled ocsp stapling check")));
-
 		bio = BIO_new_file(ssl_ocsp_file, "r");
 		if (bio == NULL)
 		{
