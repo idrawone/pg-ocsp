@@ -324,6 +324,11 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"SSL-Maximum-Protocol-Version", "", 8,	/* sizeof("TLSv1.x") == 8 */
 	offsetof(struct pg_conn, ssl_max_protocol_version)},
 
+	{"ssl_ocsp_stapling", "PGSSLOCSPSTAPLING", "0", NULL,
+		"SSL-OCSP-Stapling", "", 1,
+	offsetof(struct pg_conn, ssl_ocsp_stapling)},
+
+
 	/*
 	 * As with SSL, all GSS options are exposed even in builds that don't have
 	 * support.
@@ -445,6 +450,7 @@ static bool sslVerifyProtocolVersion(const char *version);
 static bool sslVerifyProtocolRange(const char *min, const char *max);
 static bool parse_int_param(const char *value, int *result, PGconn *conn,
 							const char *context);
+static bool sslVerifyOcspStapling(const char *stapling);
 
 
 /* global variable because fe-auth.c needs to access it */
@@ -1568,6 +1574,14 @@ connectOptions2(PGconn *conn)
 		return false;
 	}
 
+//	if (!sslVerifyOcspStapling(conn->ssl_ocsp_stapling))
+//	{
+//		conn->status = CONNECTION_BAD;
+//		libpq_append_conn_error(conn, "invalid %s value: \"%s\"",
+//								"ssl_ocsp_stapling",
+//								conn->ssl_ocsp_stapling);
+//		return false;
+//	}
 	/*
 	 * Check if the range of SSL protocols defined is correct.  This is done
 	 * at this early step because this is independent of the SSL
@@ -4453,6 +4467,7 @@ freePGconn(PGconn *conn)
 	free(conn->require_auth);
 	free(conn->ssl_min_protocol_version);
 	free(conn->ssl_max_protocol_version);
+	free(conn->ssl_ocsp_stapling);
 	free(conn->gssencmode);
 	free(conn->krbsrvname);
 	free(conn->gsslib);
@@ -7693,6 +7708,25 @@ sslVerifyProtocolVersion(const char *version)
 	return false;
 }
 
+/*
+ * Check ssl_ocsp_stapling is set properly
+ */
+static bool
+sslVerifyOcspStapling(const char *stapling)
+{
+	/*
+	 * An empty string or a NULL value is considered valid
+	 */
+	if (!stapling || strlen(stapling) == 0)
+		return true;
+
+	if (pg_strcasecmp(stapling, "0") == 0 ||
+		pg_strcasecmp(stapling, "1") == 0)
+		return true;
+
+	/* anything else is wrong */
+	return false;
+}
 
 /*
  * Ensure that the SSL protocol range given in input is correct.  The check

@@ -1045,20 +1045,35 @@ initialize_SSL(PGconn *conn)
 	 */
 	SSL_CTX_set_mode(SSL_context, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
 
-    /* TODO: Enable OCSP-Stapling! */
-//	printf( "\n==> mydebugging BEFORE enable OCSP....");
-    if (SSL_CTX_set_tlsext_status_type(SSL_context, TLSEXT_STATUSTYPE_ocsp) != 1) {
-    	printf( "\n==> Function 'SSL_CTX_set_tlsext_status_type' has failed!");
-    	return -1;
-    }
-    /* OPTIONAL: Set custom verification callback */
-    /* Function callback called during the TLS handshake after the certificate chain has been verified. */
-    /* Mainly designed for checking the result of stapled OCSP Response. */
-//    printf( "\n==> mydebugging set ocsp_stapling_check callback ...");
-    SSL_CTX_set_tlsext_status_cb(SSL_context, ocsp_stapling_check);
+	/* Enable OCSP Stapling for certificate status check */
+	if (conn->ssl_ocsp_stapling &&
+		strlen(conn->ssl_ocsp_stapling) != 0 &&
+		(strcmp(conn->ssl_ocsp_stapling, "1") == 0))
+	{
+		/* setup certificate status request */
+		if (SSL_CTX_set_tlsext_status_type(SSL_context,
+				TLSEXT_STATUSTYPE_ocsp) != 1)
+		{
+			char	*err = SSLerrmessage(ERR_get_error());
+			libpq_append_conn_error(conn,
+					"could not set ocsp stapling request: %s", err);
+			SSLerrfree(err);
+			SSL_CTX_free(SSL_context);
+			return -1;
+		}
 
-//    printf( "\n==> mydebugging AFTER enable OCSP....");
-
+		/* setup ocsp stapling callback */
+		if (SSL_CTX_set_tlsext_status_cb(SSL_context,
+				ocsp_stapling_check) <= 0)
+		{
+			char	*err = SSLerrmessage(ERR_get_error());
+			libpq_append_conn_error(conn,
+					"could not set ocsp stapling callback: %s", err);
+			SSLerrfree(err);
+			SSL_CTX_free(SSL_context);
+			return -1;
+		}
+	}
 
 	/*
 	 * If the root cert file exists, load it so we can perform certificate
