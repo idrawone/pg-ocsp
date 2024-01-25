@@ -2100,25 +2100,25 @@ ssl_protocol_version_to_openssl(const char *protocol)
 
 
 
-STACK_OF(X509) *retrieve_server_certificate_chain(SSL *ssl, int *cert_chain_stack_size, bool useVerified)
+STACK_OF(X509) *retrieve_server_certificate_chain(SSL *ssl, int *chain_size, bool useVerified)
 {
     /* Retrieve the server's certificate chain from the OpenSSL connection. */
     /* Another option: SSL_get0_verified_chain() */
-    STACK_OF(X509) *cert_chain_stack = NULL;
+    STACK_OF(X509) *peer_cert_chain = NULL;
     if (useVerified) {
-        cert_chain_stack = SSL_get0_verified_chain(ssl);
+        peer_cert_chain = SSL_get0_verified_chain(ssl);
     }
     else {
-        cert_chain_stack = SSL_get_peer_cert_chain(ssl);
+        peer_cert_chain = SSL_get_peer_cert_chain(ssl);
     }
 
-    if (cert_chain_stack == NULL) {
+    if (peer_cert_chain == NULL) {
         fprintf(stderr, "- certificate chain is not present!\n");
         return NULL;
     }
 
-    *cert_chain_stack_size = sk_X509_num(cert_chain_stack);
-    return cert_chain_stack;
+    *chain_size = sk_X509_num(peer_cert_chain);
+    return peer_cert_chain;
 }
 
 void print_x509_certificate_info(X509 *certificate)
@@ -2150,14 +2150,15 @@ void print_x509_certificate_chain_info(SSL *ssl)
     printf("\nCertificate chain details: \n");
 
     /* Get the certificate chain sent by the peer */
-    int cert_chain_stack_size;
-    STACK_OF(X509) *cert_chain_stack = retrieve_server_certificate_chain(ssl, &cert_chain_stack_size, false);
-    if (cert_chain_stack == NULL) {
+    int chain_size;
+
+    STACK_OF(X509) *peer_cert_chain = retrieve_server_certificate_chain(ssl, &chain_size, false);
+    if (peer_cert_chain == NULL) {
         return;
     }
 
-    for (int index = 0; index < cert_chain_stack_size; index++) {
-        X509 *current_certificate = sk_X509_value(cert_chain_stack, index);
+    for (int index = 0; index < chain_size; index++) {
+        X509 *current_certificate = sk_X509_value(peer_cert_chain, index);
         printf("\nPrinting information about certificate at index: %d\n", index);
         print_x509_certificate_info(current_certificate);
     }
@@ -2210,28 +2211,32 @@ int parse_revocation_check_from_basic_resp_through_single_resp(OCSP_BASICRESP *o
     return status;
 }
 
-int verify_ocsp_response_signature(OCSP_RESPONSE *ocsp_response, STACK_OF(X509) *cert_chain_stack, OCSP_BASICRESP **ocsp_response_basic_in) {
+int verify_ocsp_response_signature(OCSP_RESPONSE *resp, STACK_OF(X509) *cert_chain, OCSP_BASICRESP **resp_in)
+{
+	int status = REVOC_CHECK_SUCCESS;
 
-    int status = REVOC_CHECK_SUCCESS;
+	X509_STORE *store = NULL;
+	X509_LOOKUP *lookup;
+	OCSP_BASICRESP *bs = NULL;
 
-    X509_STORE *store = NULL;
-    X509_LOOKUP *lookup;
+	/* check ocsp response status */
+	status = OCSP_response_status(resp);
+	if (status != OCSP_RESPONSE_STATUS_SUCCESSFUL)
+	{
+		fprintf(stderr, "\nInvalid status: %s", OCSP_response_status_str(status));
+		return -1;
+	}
 
-    /* Check the status of retrieved OCSP response, if it is not malformed or invalid for some other reason. */
-    if (OCSP_response_status(ocsp_response) != OCSP_RESPONSE_STATUS_SUCCESSFUL) {
-        fprintf(stderr, "- invalid status of OCSP Response!\n");
-        return REVOC_CHECK_FAILURE;
-    }
+	/* get OCSP_BASICRESP structure */
+	bs = OCSP_response_get1_basic(resp);
+	if (bs == NULL)
+	{
+		fprintf(stderr, "\nFunction 'OCSP_response_get1_basic' has failed!");
+		status = -1;
+		goto cleanup;
+	}
 
-    /* Decode and return the OCSP_BASICRESP structure from OCSP_RESPONSE. */
-    OCSP_BASICRESP *ocsp_response_basic = OCSP_response_get1_basic(ocsp_response);
-    if (ocsp_response_basic == NULL) {
-        fprintf(stderr, "Function 'OCSP_response_get1_basic' has failed!\n");
-        status = REVOC_CHECK_INTERNAL_ERROR;
-        goto cleanup;
-    }
-
-    /* Load default certificate store. */
+	//TODO store
     /* This will be required later when verifying signature of OCSP (basic) response and verifying the issuer's certificate as well. */
     store = X509_STORE_new();
     if (store == NULL) {
@@ -2283,27 +2288,26 @@ int verify_ocsp_response_signature(OCSP_RESPONSE *ocsp_response, STACK_OF(X509) 
     /* Verify the signature of basic OCSP Response with validation of issuer's certificate. */
     /* If we want to just verify the signature of OCSP response and we dont want to validate the server's certificate, use flag OCSP_TRUSTOTHER and the X509_STORE wont be needed. */
 
-    int verify_result = OCSP_basic_verify(ocsp_response_basic, cert_chain_stack, store, 0);
-//    fprintf(stderr, "\n ==>mydebugging - verification of OCSP (basic) Response result = %d\n", verify_result);
-    if ( verify_result != 1) {
-        fprintf(stderr, "- verification of OCSP (basic) Response has failed!\n");
-        status = REVOC_CHECK_FAILURE;
-        goto cleanup;
-    }
+	status = OCSP_basic_verify(bs, cert_chain, store, 0);
+	if (status != 1)
+	{
+		fprintf(stderr, "\ncould not verify ocsp response");
+		status = -1;
+		goto cleanup;
+	}
 
-    /* Deinitialize */
     X509_STORE_free(store);
+    *resp_in = bs;
 
-    *ocsp_response_basic_in = ocsp_response_basic;
     return status;
 
 cleanup:
-    if (ocsp_response_basic != NULL) {
-        OCSP_BASICRESP_free(ocsp_response_basic);
-    }
-    if (store != NULL) {
+    if (bs != NULL)
+        OCSP_BASICRESP_free(bs);
+
+    if (store != NULL)
         X509_STORE_free(store);
-    }
+
     return status;
 }
 
@@ -2346,16 +2350,17 @@ static int ocsp_stapling_check(SSL *ssl)
     /* Verify and parse the OCSP stapled Response! */
 //    print_x509_certificate_chain_info(ssl);
     /* Retrieve the server's certificate chain from the OpenSSL connection. */
-    int cert_chain_stack_size;
-    STACK_OF(X509) *cert_chain_stack = retrieve_server_certificate_chain(ssl, &cert_chain_stack_size, false);
-    if (cert_chain_stack == NULL) {
+    STACK_OF(X509) *peer_cert_chain = SSL_get_peer_cert_chain(ssl);
+    if (peer_cert_chain == NULL)
+    {
         status = REVOC_CHECK_FAILURE;
         goto cleanup;
     }
+    int chain_size = sk_X509_num(peer_cert_chain);
 //    printf("\n ==> mydebugging - retrieve_server_certificate_chain done... ");
 
     /* Verify the signature of the retrieved Stapled OCSP Response. */
-    status = verify_ocsp_response_signature(stapled_ocsp_response, cert_chain_stack, &stapled_ocsp_response_basic);
+    status = verify_ocsp_response_signature(stapled_ocsp_response, peer_cert_chain, &stapled_ocsp_response_basic);
     if (status != REVOC_CHECK_SUCCESS) {
         goto cleanup;
     }
