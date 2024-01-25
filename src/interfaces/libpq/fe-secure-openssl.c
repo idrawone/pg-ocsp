@@ -2166,48 +2166,38 @@ void print_x509_certificate_chain_info(SSL *ssl)
     }
 }
 
-int parse_revocation_check_from_basic_resp_through_single_resp(OCSP_BASICRESP *ocsp_response_basic) {
-    int status = REVOC_CHECK_SUCCESS;
-
-    /* Retrieve the revocation status of the certificates included in the OCSP Basic response. */
-    /* Revocation reason and time will be filled only if revocation_status == V_OCSP_CERTSTATUS_REVOKED. */
-    int revocation_status;
-    int revocation_reason;
+int verify_revocation_status(OCSP_BASICRESP *basic_resp)
+{
     ASN1_GENERALIZEDTIME *rev_time;
     ASN1_GENERALIZEDTIME *thisupd;
     ASN1_GENERALIZEDTIME *nextupd;
 
-    int number_of_single_responses = OCSP_resp_count(ocsp_response_basic);
+    int num_of_resp = OCSP_resp_count(basic_resp);
 
-    OCSP_SINGLERESP *one_response;
-    for (int index = 0; index < number_of_single_responses; index ++) {
-        one_response = OCSP_resp_get0(ocsp_response_basic, index);
-        if (one_response == NULL) {
-            fprintf(stderr, "Function 'OCSP_resp_get0' has failed!\n");
+    OCSP_SINGLERESP *single_resp;
+    for (int index = 0; index < num_of_resp; index ++)
+    {
+        single_resp = OCSP_resp_get0(basic_resp, index);
+        if (single_resp == NULL) {
+            fprintf(stderr, "Function 'OCSP_resp_get0' has failed!");
             return REVOC_CHECK_INTERNAL_ERROR;
         }
 
-        /* Retrieve the revocation status, revocation_reason, revocation time and other info */
-        /* Similar to functionOCSP_resp_find(), but this one operates on OCSP_SINGLERESP structure. */
-        int rev_status = OCSP_single_get0_status(one_response, &revocation_reason, &rev_time, &thisupd, &nextupd);
-        if (rev_status == V_OCSP_CERTSTATUS_GOOD) {
+        int revocation_reason;
+        int rev_status = OCSP_single_get0_status(single_resp, NULL, NULL, NULL, NULL);
+        if (rev_status == V_OCSP_CERTSTATUS_GOOD)
+        {
+        	continue;
 //            printf("[OK]\n");
         }
-        else if (rev_status == V_OCSP_CERTSTATUS_REVOKED) {
-//            printf("[NOK]\n");
-            return REVOC_CHECK_FAILURE;
-        }
-        else if (rev_status == V_OCSP_CERTSTATUS_UNKNOWN) {
-//            printf("[UNKNOWN]\n");
-        }
-        else {
-            /* Should not happen. */
+        else
+        {
 //            printf("[ERROR]\n");
-            return REVOC_CHECK_INTERNAL_ERROR;
+        	return -1;
         }
     }
 
-    return status;
+    return REVOC_CHECK_SUCCESS;
 }
 
 int verify_issuer_and_signature(OCSP_RESPONSE *resp, STACK_OF(X509) *cert_chain, OCSP_BASICRESP **resp_in)
@@ -2320,15 +2310,15 @@ static int ocsp_stapling_check(SSL *ssl)
     }
     int chain_size = sk_X509_num(peer_cert_chain);
 
-    /* verify the signature of ocsp response */
+    /* verify issuer and signature */
 	status = verify_issuer_and_signature(stapled_resp, peer_cert_chain, &stapled_basic_resp);
 	if (status != REVOC_CHECK_SUCCESS)
 	{
 		goto cleanup;
 	}
 
-	/* Find out the revocation status for every certificate included in the stapled OCSP Response. */
-    status = parse_revocation_check_from_basic_resp_through_single_resp(stapled_basic_resp);
+	/* verify each revocation status ocsp response. */
+    status = verify_revocation_status(stapled_basic_resp);
     if (status != REVOC_CHECK_SUCCESS) {
         goto cleanup;
     }
@@ -2336,7 +2326,6 @@ static int ocsp_stapling_check(SSL *ssl)
     OCSP_RESPONSE_free(stapled_resp);
     OCSP_BASICRESP_free(stapled_basic_resp);
 
-    //TODO: PG expects 1 as success
     return REVOC_CHECK_SUCCESS;
 
 cleanup:
