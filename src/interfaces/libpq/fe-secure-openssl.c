@@ -100,10 +100,9 @@ static long win32_ssl_create_mutex = 0;
 
 static PQsslKeyPassHook_OpenSSL_type PQsslKeyPassHook = NULL;
 static int	ssl_protocol_version_to_openssl(const char *protocol);
-static int ocsp_stapling_check(SSL *ssl);
-#define REVOC_CHECK_SUCCESS 1
-#define REVOC_CHECK_FAILURE 0
-#define REVOC_CHECK_INTERNAL_ERROR 2
+static int ocsp_stapling_check_cb(SSL *ssl);
+#define OCSP_CERT_STATUS_OK 	1
+#define OCSP_CERT_STATUS_NOK 	(-1)
 
 /* ------------------------------------------------------------ */
 /*			 Procedures common to all secure sessions			*/
@@ -1225,7 +1224,7 @@ initialize_SSL(PGconn *conn)
 
 		/* setup ocsp stapling callback */
 		if (SSL_CTX_set_tlsext_status_cb(SSL_context,
-				ocsp_stapling_check) <= 0)
+				ocsp_stapling_check_cb) <= 0)
 		{
 			char	*err = SSLerrmessage(ERR_get_error());
 			libpq_append_conn_error(conn,
@@ -2170,12 +2169,12 @@ static int verify_revocation_status(OCSP_BASICRESP *basic_resp)
         }
     }
 
-    return REVOC_CHECK_SUCCESS;
+    return OCSP_CERT_STATUS_OK;
 }
 
 static int verify_issuer_and_signature(OCSP_RESPONSE *resp, STACK_OF(X509) *cert_chain, OCSP_BASICRESP **resp_in)
 {
-	int status = REVOC_CHECK_SUCCESS;
+	int status = OCSP_CERT_STATUS_OK;
 	X509_STORE *store = NULL;
 	OCSP_BASICRESP *bs = NULL;
 	X509_LOOKUP *lookup = NULL;
@@ -2238,75 +2237,75 @@ cleanup:
     return status;
 }
 
-void save_OCSP_request_to_file(OCSP_REQUEST *ocsp_request, char *filename) {
-    BIO *file = BIO_new_file(filename, "wb");
-    i2d_OCSP_REQUEST_bio(file, ocsp_request);
-    BIO_free(file);
-}
-
-static int ocsp_stapling_check(SSL *ssl)
+static int ocsp_stapling_check_cb(SSL *ssl)
 {
-	int status = REVOC_CHECK_SUCCESS;
+	char *ocsp_resp;
+	int chain_size = 0;
+	long ocsp_resp_len = 0;
+	OCSP_RESPONSE *stapled_resp = NULL;
+	STACK_OF(X509) *peer_cert_chain = NULL;
 	OCSP_BASICRESP *stapled_basic_resp = NULL;
 
 	/* check if sent ocsp request */
 	if (SSL_get_tlsext_status_type(ssl) != TLSEXT_STATUSTYPE_ocsp)
 	{
     	printf("\n- client does not previously requested the OCSP-stapling!\n");
-        return REVOC_CHECK_SUCCESS;
+        return OCSP_CERT_STATUS_OK;
     }
 
-    /* get stapled OCSP response */
-    char *ocsp_resp;
-    long ocsp_resp_len = SSL_get_tlsext_status_ocsp_resp(ssl, &ocsp_resp);
+    /* get ocsp response */
+    ocsp_resp_len = SSL_get_tlsext_status_ocsp_resp(ssl, &ocsp_resp);
     if (ocsp_resp_len == -1)
     {
     	printf("- server did not send the stapled OCSP Response!\n");
-        return REVOC_CHECK_SUCCESS;
+        return OCSP_CERT_STATUS_NOK;
     }
 
-    /* convert OCSP Response from der to internal format */
-    OCSP_RESPONSE *stapled_resp = d2i_OCSP_RESPONSE(NULL, &ocsp_resp, ocsp_resp_len);
+    /* convert ocsp response from der to internal format */
+    stapled_resp = d2i_OCSP_RESPONSE(NULL, &ocsp_resp, ocsp_resp_len);
     if (stapled_resp == NULL)
     {
     	printf("Function 'd2i_OCSP_RESPONSE' has failed!\n");
-        return REVOC_CHECK_INTERNAL_ERROR;
+        return OCSP_CERT_STATUS_NOK;
     }
 
-//    print_cert_chain(ssl);
+    print_cert_chain(ssl);
     /* get peer certificate chain TLS connection */
-    STACK_OF(X509) *peer_cert_chain = SSL_get_peer_cert_chain(ssl);
+    peer_cert_chain = SSL_get_peer_cert_chain(ssl);
     if (peer_cert_chain == NULL)
     {
-        status = REVOC_CHECK_FAILURE;
-        goto cleanup;
+        return OCSP_CERT_STATUS_NOK;
     }
-    int chain_size = sk_X509_num(peer_cert_chain);
+    chain_size = sk_X509_num(peer_cert_chain);
 
     /* verify issuer and signature */
-	status = verify_issuer_and_signature(stapled_resp, peer_cert_chain, &stapled_basic_resp);
-	if (status != REVOC_CHECK_SUCCESS)
-	{
+	if (verify_issuer_and_signature(stapled_resp, peer_cert_chain, &stapled_basic_resp) != OCSP_CERT_STATUS_OK)
 		goto cleanup;
-	}
 
 	/* verify each revocation status ocsp response. */
-    status = verify_revocation_status(stapled_basic_resp);
-    if (status != REVOC_CHECK_SUCCESS) {
+    if (verify_revocation_status(stapled_basic_resp) != OCSP_CERT_STATUS_OK)
         goto cleanup;
-    }
 
-    OCSP_RESPONSE_free(stapled_resp);
-    OCSP_BASICRESP_free(stapled_basic_resp);
+	if (peer_cert_chain != NULL)
+		OSSL_STACK_OF_X509_free(peer_cert_chain);
 
-    return REVOC_CHECK_SUCCESS;
+    if (stapled_resp != NULL)
+        OCSP_RESPONSE_free(stapled_resp);
+
+    if (stapled_basic_resp != NULL)
+    	OCSP_BASICRESP_free(stapled_basic_resp);
+
+    return OCSP_CERT_STATUS_OK;
 
 cleanup:
-    if (stapled_resp != NULL) {
+	if (peer_cert_chain != NULL)
+		OSSL_STACK_OF_X509_free(peer_cert_chain);
+
+    if (stapled_resp != NULL)
         OCSP_RESPONSE_free(stapled_resp);
-    }
-    if (stapled_basic_resp != NULL) {
+
+    if (stapled_basic_resp != NULL)
         OCSP_BASICRESP_free(stapled_basic_resp);
-    }
-    return status;
+
+    return OCSP_CERT_STATUS_NOK;
 }
