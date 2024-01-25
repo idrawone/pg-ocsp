@@ -104,7 +104,7 @@ static int ocsp_stapling_check(SSL *ssl);
 #define REVOC_CHECK_SUCCESS 1
 #define REVOC_CHECK_FAILURE 0
 #define REVOC_CHECK_INTERNAL_ERROR 2
-#define REVOC_CHECK_NOT_PERFORMED 3
+
 /* ------------------------------------------------------------ */
 /*			 Procedures common to all secure sessions			*/
 /* ------------------------------------------------------------ */
@@ -1045,36 +1045,6 @@ initialize_SSL(PGconn *conn)
 	 */
 	SSL_CTX_set_mode(SSL_context, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
 
-	/* Enable OCSP Stapling for certificate status check */
-	if (conn->ssl_ocsp_stapling &&
-		strlen(conn->ssl_ocsp_stapling) != 0 &&
-		(strcmp(conn->ssl_ocsp_stapling, "1") == 0))
-	{
-		/* setup certificate status request */
-		if (SSL_CTX_set_tlsext_status_type(SSL_context,
-				TLSEXT_STATUSTYPE_ocsp) != 1)
-		{
-			char	*err = SSLerrmessage(ERR_get_error());
-			libpq_append_conn_error(conn,
-					"could not set ocsp stapling request: %s", err);
-			SSLerrfree(err);
-			SSL_CTX_free(SSL_context);
-			return -1;
-		}
-
-		/* setup ocsp stapling callback */
-		if (SSL_CTX_set_tlsext_status_cb(SSL_context,
-				ocsp_stapling_check) <= 0)
-		{
-			char	*err = SSLerrmessage(ERR_get_error());
-			libpq_append_conn_error(conn,
-					"could not set ocsp stapling callback: %s", err);
-			SSLerrfree(err);
-			SSL_CTX_free(SSL_context);
-			return -1;
-		}
-	}
-
 	/*
 	 * If the root cert file exists, load it so we can perform certificate
 	 * verification. If sslmode is "verify-full" we will also do further
@@ -1234,6 +1204,36 @@ initialize_SSL(PGconn *conn)
 
 		/* need to load the associated private key, too */
 		have_cert = true;
+	}
+
+	/* Enable OCSP Stapling for certificate status check */
+	if (conn->ssl_ocsp_stapling &&
+		strlen(conn->ssl_ocsp_stapling) != 0 &&
+		(strcmp(conn->ssl_ocsp_stapling, "1") == 0))
+	{
+		/* setup certificate status request */
+		if (SSL_CTX_set_tlsext_status_type(SSL_context,
+				TLSEXT_STATUSTYPE_ocsp) != 1)
+		{
+			char	*err = SSLerrmessage(ERR_get_error());
+			libpq_append_conn_error(conn,
+					"could not set ocsp stapling request: %s", err);
+			SSLerrfree(err);
+			SSL_CTX_free(SSL_context);
+			return -1;
+		}
+
+		/* setup ocsp stapling callback */
+		if (SSL_CTX_set_tlsext_status_cb(SSL_context,
+				ocsp_stapling_check) <= 0)
+		{
+			char	*err = SSLerrmessage(ERR_get_error());
+			libpq_append_conn_error(conn,
+					"could not set ocsp stapling callback: %s", err);
+			SSLerrfree(err);
+			SSL_CTX_free(SSL_context);
+			return -1;
+		}
 	}
 
 	/*
@@ -2218,6 +2218,7 @@ int verify_ocsp_response_signature(OCSP_RESPONSE *resp, STACK_OF(X509) *cert_cha
 	int status = REVOC_CHECK_SUCCESS;
 	X509_STORE *store = NULL;
 	OCSP_BASICRESP *bs = NULL;
+	X509_LOOKUP *lookup = NULL;
 
 	/* check ocsp response status */
 	status = OCSP_response_status(resp);
@@ -2237,58 +2238,18 @@ int verify_ocsp_response_signature(OCSP_RESPONSE *resp, STACK_OF(X509) *cert_cha
 	}
 
 //TODO store
-    /* This will be required later when verifying signature of OCSP (basic) response and verifying the issuer's certificate as well. */
     store = X509_STORE_new();
-    if (store == NULL) {
-        fprintf(stderr, "Function 'X509_STORE_new' has failed!\n");
-        status = REVOC_CHECK_INTERNAL_ERROR;
+    lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
+    if (lookup == NULL)
+    	goto cleanup;
+
+	if (X509_LOOKUP_load_file(lookup, "rootCA.crt", X509_FILETYPE_PEM) <= 0)
+	{
+        fprintf(stderr, "Error loading file %s\n", "rootCA.crt");
         goto cleanup;
     }
 
-//    X509_LOOKUP *lookup = NULL;
-//    lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
-//    if (lookup == NULL)
-//    	goto cleanup;
-//	if (X509_LOOKUP_load_file(lookup, "rootCA.crt", X509_FILETYPE_PEM) <= 0)
-//	{
-//        fprintf(stderr, "Error loading file %s\n", "rootCA.crt");
-//        goto cleanup;
-//    }
-
-    //TODO: check PG to confirm the trust store setup
-    if (X509_STORE_set_default_paths(store) != 1) {
-        fprintf(stderr, "Function 'X509_STORE_set_default_paths' has failed!\n");
-        status = REVOC_CHECK_INTERNAL_ERROR;
-        goto cleanup;
-    }
-
-    /* Add the self-signed CA certificate to the store. */
-    X509 *rootCA_cert = NULL;
-    BIO *bio = BIO_new_file("rootCA.crt", "r");
-    if (bio == NULL) {
-        fprintf(stderr, "Error reading the rootCA.crt file!\n");
-        status = REVOC_CHECK_INTERNAL_ERROR;
-        goto cleanup;
-    }
-    rootCA_cert = PEM_read_bio_X509(bio, NULL, 0, NULL);
-    if (rootCA_cert == NULL) {
-        fprintf(stderr, "Error loading the rootCA.crt file!\n");
-        status = REVOC_CHECK_INTERNAL_ERROR;
-        BIO_free(bio);
-        goto cleanup;
-    }
-    BIO_free(bio);
-    if (X509_STORE_add_cert(store, rootCA_cert) != 1) {
-        fprintf(stderr, "Error adding the rootCA certificate to the store!\n");
-        status = REVOC_CHECK_INTERNAL_ERROR;
-        X509_free(rootCA_cert);
-        goto cleanup;
-    }
-    X509_free(rootCA_cert);
-
-    /* Verify the signature of basic OCSP Response with validation of issuer's certificate. */
-    /* If we want to just verify the signature of OCSP response and we dont want to validate the server's certificate, use flag OCSP_TRUSTOTHER and the X509_STORE wont be needed. */
-
+    /* verify issuer's certificate and the signature of basic ocsp response */
 	status = OCSP_basic_verify(bs, cert_chain, store, 0);
 	if (status != 1)
 	{
@@ -2297,17 +2258,22 @@ int verify_ocsp_response_signature(OCSP_RESPONSE *resp, STACK_OF(X509) *cert_cha
 		goto cleanup;
 	}
 
-    X509_STORE_free(store);
+    if (store != NULL)
+    	X509_STORE_free(store);
+
     *resp_in = bs;
 
     return status;
 
 cleanup:
     if (bs != NULL)
-        OCSP_BASICRESP_free(bs);
+    	OCSP_BASICRESP_free(bs);
 
     if (store != NULL)
-        X509_STORE_free(store);
+    	X509_STORE_free(store);
+
+    if (lookup != NULL)
+    	X509_LOOKUP_free(lookup);
 
     return status;
 }
