@@ -2178,12 +2178,9 @@ int parse_revocation_check_from_basic_resp_through_single_resp(OCSP_BASICRESP *o
     ASN1_GENERALIZEDTIME *nextupd;
 
     int number_of_single_responses = OCSP_resp_count(ocsp_response_basic);
-//    printf("\n==> mydebugging - number of single responses in OCSP basic response: %d\n", number_of_single_responses);
 
     OCSP_SINGLERESP *one_response;
     for (int index = 0; index < number_of_single_responses; index ++) {
-//        printf("\nVerifying OCSP_SINGLERESP at index: %d ... ", index);
-
         one_response = OCSP_resp_get0(ocsp_response_basic, index);
         if (one_response == NULL) {
             fprintf(stderr, "Function 'OCSP_resp_get0' has failed!\n");
@@ -2213,7 +2210,7 @@ int parse_revocation_check_from_basic_resp_through_single_resp(OCSP_BASICRESP *o
     return status;
 }
 
-int verify_ocsp_response_signature(OCSP_RESPONSE *resp, STACK_OF(X509) *cert_chain, OCSP_BASICRESP **resp_in)
+int verify_issuer_and_signature(OCSP_RESPONSE *resp, STACK_OF(X509) *cert_chain, OCSP_BASICRESP **resp_in)
 {
 	int status = REVOC_CHECK_SUCCESS;
 	X509_STORE *store = NULL;
@@ -2287,7 +2284,7 @@ void save_OCSP_request_to_file(OCSP_REQUEST *ocsp_request, char *filename) {
 static int ocsp_stapling_check(SSL *ssl)
 {
 	int status = REVOC_CHECK_SUCCESS;
-	OCSP_BASICRESP *stapled_ocsp_response_basic = NULL;
+	OCSP_BASICRESP *stapled_basic_resp = NULL;
 
 	/* check if sent ocsp request */
 	if (SSL_get_tlsext_status_type(ssl) != TLSEXT_STATUSTYPE_ocsp)
@@ -2306,8 +2303,8 @@ static int ocsp_stapling_check(SSL *ssl)
     }
 
     /* convert OCSP Response from der to internal format */
-    OCSP_RESPONSE *stapled_ocsp_response = d2i_OCSP_RESPONSE(NULL, &ocsp_resp, ocsp_resp_len);
-    if (stapled_ocsp_response == NULL)
+    OCSP_RESPONSE *stapled_resp = d2i_OCSP_RESPONSE(NULL, &ocsp_resp, ocsp_resp_len);
+    if (stapled_resp == NULL)
     {
     	printf("Function 'd2i_OCSP_RESPONSE' has failed!\n");
         return REVOC_CHECK_INTERNAL_ERROR;
@@ -2324,31 +2321,30 @@ static int ocsp_stapling_check(SSL *ssl)
     int chain_size = sk_X509_num(peer_cert_chain);
 
     /* verify the signature of ocsp response */
-	status = verify_ocsp_response_signature(stapled_ocsp_response, peer_cert_chain, &stapled_ocsp_response_basic);
+	status = verify_issuer_and_signature(stapled_resp, peer_cert_chain, &stapled_basic_resp);
 	if (status != REVOC_CHECK_SUCCESS)
 	{
 		goto cleanup;
 	}
 
 	/* Find out the revocation status for every certificate included in the stapled OCSP Response. */
-    status = parse_revocation_check_from_basic_resp_through_single_resp(stapled_ocsp_response_basic);
+    status = parse_revocation_check_from_basic_resp_through_single_resp(stapled_basic_resp);
     if (status != REVOC_CHECK_SUCCESS) {
         goto cleanup;
     }
-//    printf("\n ==> mydebugging - parse_revocation_check_from_basic_resp_through_single_resp done... ");
 
-    OCSP_RESPONSE_free(stapled_ocsp_response);
-    OCSP_BASICRESP_free(stapled_ocsp_response_basic);
+    OCSP_RESPONSE_free(stapled_resp);
+    OCSP_BASICRESP_free(stapled_basic_resp);
 
     //TODO: PG expects 1 as success
     return REVOC_CHECK_SUCCESS;
 
 cleanup:
-    if (stapled_ocsp_response != NULL) {
-        OCSP_RESPONSE_free(stapled_ocsp_response);
+    if (stapled_resp != NULL) {
+        OCSP_RESPONSE_free(stapled_resp);
     }
-    if (stapled_ocsp_response_basic != NULL) {
-        OCSP_BASICRESP_free(stapled_ocsp_response_basic);
+    if (stapled_basic_resp != NULL) {
+        OCSP_BASICRESP_free(stapled_basic_resp);
     }
     return status;
 }
