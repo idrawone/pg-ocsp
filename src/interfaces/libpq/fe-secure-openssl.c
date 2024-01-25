@@ -2286,9 +2286,6 @@ static int ocsp_stapling_check_cb(SSL *ssl)
     if (verify_revocation_status(stapled_basic_resp) != OCSP_CERT_STATUS_OK)
         goto cleanup;
 
-	if (peer_cert_chain != NULL)
-		OSSL_STACK_OF_X509_free(peer_cert_chain);
-
     if (stapled_resp != NULL)
         OCSP_RESPONSE_free(stapled_resp);
 
@@ -2298,8 +2295,6 @@ static int ocsp_stapling_check_cb(SSL *ssl)
     return OCSP_CERT_STATUS_OK;
 
 cleanup:
-	if (peer_cert_chain != NULL)
-		OSSL_STACK_OF_X509_free(peer_cert_chain);
 
     if (stapled_resp != NULL)
         OCSP_RESPONSE_free(stapled_resp);
