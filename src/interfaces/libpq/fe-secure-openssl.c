@@ -2100,32 +2100,11 @@ ssl_protocol_version_to_openssl(const char *protocol)
 
 
 
-STACK_OF(X509) *retrieve_server_certificate_chain(SSL *ssl, int *chain_size, bool useVerified)
-{
-    /* Retrieve the server's certificate chain from the OpenSSL connection. */
-    /* Another option: SSL_get0_verified_chain() */
-    STACK_OF(X509) *peer_cert_chain = NULL;
-    if (useVerified) {
-        peer_cert_chain = SSL_get0_verified_chain(ssl);
-    }
-    else {
-        peer_cert_chain = SSL_get_peer_cert_chain(ssl);
-    }
-
-    if (peer_cert_chain == NULL) {
-        fprintf(stderr, "- certificate chain is not present!\n");
-        return NULL;
-    }
-
-    *chain_size = sk_X509_num(peer_cert_chain);
-    return peer_cert_chain;
-}
-
-void print_x509_certificate_info(X509 *certificate)
+void print_cert_info(X509 *certificate)
 {
     if (certificate == NULL)
     {
-        fprintf(stderr, "- retrieved certificate is NULL\n");
+        fprintf(stderr, "\nretrieved certificate is NULL");
         return;
     }
 
@@ -2138,61 +2117,55 @@ void print_x509_certificate_info(X509 *certificate)
     char *issuer_name_oneline = X509_NAME_oneline(issuer_name, NULL, 0);
     printf("- issuer name: %s\n", issuer_name_oneline);
 
-    /* Deinitialize*/
     free(subject_name_oneline);
     free(issuer_name_oneline);
 }
 
-void print_x509_certificate_chain_info(SSL *ssl)
+void print_cert_chain(SSL *ssl)
 {
-    /* struct x509_extension_t -> typedef X509_EXTENSION -> in stack as STACK_OF(X509_EXTENSION) -> typedef X509_EXTENSIONS */
-    printf("\nCertificate chain details: \n");
+	int chain_size;
+	STACK_OF(X509) *peer_cert_chain = NULL;
 
-    /* Get the certificate chain sent by the peer */
-    int chain_size;
-    STACK_OF(X509) *peer_cert_chain = NULL;
+	printf("\nCertificate chain details: \n");
 
-    peer_cert_chain = SSL_get_peer_cert_chain(ssl);
+	/* Get the certificate chain sent by the peer */
+	peer_cert_chain = SSL_get_peer_cert_chain(ssl);
 //  peer_cert_chain = SSL_get0_verified_chain(ssl);
     if (peer_cert_chain == NULL)
         return;
 
-    chain_size = sk_X509_num(peer_cert_chain);
-
-    for (int index = 0; index < chain_size; index++) {
-        X509 *current_certificate = sk_X509_value(peer_cert_chain, index);
-        printf("\nPrinting information about certificate at index: %d\n", index);
-        print_x509_certificate_info(current_certificate);
-    }
+	chain_size = sk_X509_num(peer_cert_chain);
+	for (int i = 0; i < chain_size; i++)
+	{
+		X509 *cert = sk_X509_value(peer_cert_chain, i);
+		printf("\nInformation about certificate at i: %d\n", i);
+		print_cert_info(cert);
+	}
 }
 
-int verify_revocation_status(OCSP_BASICRESP *basic_resp)
+static int verify_revocation_status(OCSP_BASICRESP *basic_resp)
 {
-    ASN1_GENERALIZEDTIME *rev_time;
-    ASN1_GENERALIZEDTIME *thisupd;
-    ASN1_GENERALIZEDTIME *nextupd;
-
-    int num_of_resp = OCSP_resp_count(basic_resp);
-
+    int num_of_resp = 0;
     OCSP_SINGLERESP *single_resp;
-    for (int index = 0; index < num_of_resp; index ++)
-    {
-        single_resp = OCSP_resp_get0(basic_resp, index);
-        if (single_resp == NULL) {
-            fprintf(stderr, "Function 'OCSP_resp_get0' has failed!");
-            return REVOC_CHECK_INTERNAL_ERROR;
-        }
 
-        int revocation_reason;
-        int rev_status = OCSP_single_get0_status(single_resp, NULL, NULL, NULL, NULL);
-        if (rev_status == V_OCSP_CERTSTATUS_GOOD)
+    num_of_resp = OCSP_resp_count(basic_resp);
+    for (int i = 0; i < num_of_resp; i ++)
+    {
+    	single_resp = OCSP_resp_get0(basic_resp, i);
+    	if (single_resp == NULL)
+    	{
+    		fprintf(stderr, "Function 'OCSP_resp_get0' has failed!");
+    		return -1;
+    	}
+
+        if (OCSP_single_get0_status(single_resp, NULL, NULL, NULL, NULL) == V_OCSP_CERTSTATUS_GOOD)
         {
+//        	printf("[OK]\n");
         	continue;
-//            printf("[OK]\n");
         }
         else
         {
-//            printf("[ERROR]\n");
+//        	printf("[NOK]\n");
         	return -1;
         }
     }
@@ -2200,7 +2173,7 @@ int verify_revocation_status(OCSP_BASICRESP *basic_resp)
     return REVOC_CHECK_SUCCESS;
 }
 
-int verify_issuer_and_signature(OCSP_RESPONSE *resp, STACK_OF(X509) *cert_chain, OCSP_BASICRESP **resp_in)
+static int verify_issuer_and_signature(OCSP_RESPONSE *resp, STACK_OF(X509) *cert_chain, OCSP_BASICRESP **resp_in)
 {
 	int status = REVOC_CHECK_SUCCESS;
 	X509_STORE *store = NULL;
@@ -2300,7 +2273,7 @@ static int ocsp_stapling_check(SSL *ssl)
         return REVOC_CHECK_INTERNAL_ERROR;
     }
 
-//    print_x509_certificate_chain_info(ssl);
+//    print_cert_chain(ssl);
     /* get peer certificate chain TLS connection */
     STACK_OF(X509) *peer_cert_chain = SSL_get_peer_cert_chain(ssl);
     if (peer_cert_chain == NULL)
