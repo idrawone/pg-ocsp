@@ -2172,12 +2172,11 @@ static int verify_revocation_status(OCSP_BASICRESP *basic_resp)
     return OCSP_CERT_STATUS_OK;
 }
 
-static int verify_issuer_and_signature(OCSP_RESPONSE *resp, STACK_OF(X509) *cert_chain, OCSP_BASICRESP **resp_in)
+static int verify_issuer_and_signature(SSL *ssl, OCSP_RESPONSE *resp, STACK_OF(X509) *cert_chain, OCSP_BASICRESP **resp_in)
 {
 	int status = OCSP_CERT_STATUS_OK;
 	X509_STORE *store = NULL;
 	OCSP_BASICRESP *bs = NULL;
-	X509_LOOKUP *lookup = NULL;
 
 	/* check ocsp response status */
 	status = OCSP_response_status(resp);
@@ -2196,20 +2195,9 @@ static int verify_issuer_and_signature(OCSP_RESPONSE *resp, STACK_OF(X509) *cert
 		goto cleanup;
 	}
 
-//TODO store
-    store = X509_STORE_new();
-    lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
-    if (lookup == NULL)
-    	goto cleanup;
-
-	if (X509_LOOKUP_load_file(lookup, "rootCA.crt", X509_FILETYPE_PEM) <= 0)
-	{
-        fprintf(stderr, "Error loading file %s\n", "rootCA.crt");
-        goto cleanup;
-    }
-
     /* verify issuer's certificate and the signature of basic ocsp response */
-	status = OCSP_basic_verify(bs, cert_chain, store, 0);
+	SSL_CTX *ssl_ctx = SSL_get_SSL_CTX(ssl);
+	status = OCSP_basic_verify(bs, cert_chain, SSL_CTX_get_cert_store(ssl_ctx), 0);
 	if (status != 1)
 	{
 		fprintf(stderr, "\ncould not verify ocsp response");
@@ -2230,9 +2218,6 @@ cleanup:
 
     if (store != NULL)
     	X509_STORE_free(store);
-
-    if (lookup != NULL)
-    	X509_LOOKUP_free(lookup);
 
     return status;
 }
@@ -2279,7 +2264,7 @@ static int ocsp_stapling_check_cb(SSL *ssl)
     chain_size = sk_X509_num(peer_cert_chain);
 
     /* verify issuer and signature */
-	if (verify_issuer_and_signature(stapled_resp, peer_cert_chain, &stapled_basic_resp) != OCSP_CERT_STATUS_OK)
+	if (verify_issuer_and_signature(ssl, stapled_resp, peer_cert_chain, &stapled_basic_resp) != OCSP_CERT_STATUS_OK)
 		goto cleanup;
 
 	/* verify each revocation status ocsp response. */

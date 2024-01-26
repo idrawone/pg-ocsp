@@ -1574,14 +1574,15 @@ connectOptions2(PGconn *conn)
 		return false;
 	}
 
-//	if (!sslVerifyOcspStapling(conn->ssl_ocsp_stapling))
-//	{
-//		conn->status = CONNECTION_BAD;
-//		libpq_append_conn_error(conn, "invalid %s value: \"%s\"",
-//								"ssl_ocsp_stapling",
-//								conn->ssl_ocsp_stapling);
-//		return false;
-//	}
+	if (!sslVerifyOcspStapling(conn->ssl_ocsp_stapling))
+	{
+		conn->status = CONNECTION_BAD;
+		libpq_append_conn_error(conn, "invalid %s value: \"%s\"",
+								"ssl_ocsp_stapling",
+								conn->ssl_ocsp_stapling);
+		return false;
+	}
+
 	/*
 	 * Check if the range of SSL protocols defined is correct.  This is done
 	 * at this early step because this is independent of the SSL
