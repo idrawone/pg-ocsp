@@ -2142,94 +2142,19 @@ void print_cert_chain(SSL *ssl)
 	}
 }
 
-static int verify_revocation_status(OCSP_BASICRESP *basic_resp)
-{
-    int num_of_resp = 0;
-    OCSP_SINGLERESP *single_resp;
-
-    num_of_resp = OCSP_resp_count(basic_resp);
-    for (int i = 0; i < num_of_resp; i ++)
-    {
-    	single_resp = OCSP_resp_get0(basic_resp, i);
-    	if (single_resp == NULL)
-    	{
-    		fprintf(stderr, "Function 'OCSP_resp_get0' has failed!");
-    		return -1;
-    	}
-
-        if (OCSP_single_get0_status(single_resp, NULL, NULL, NULL, NULL) == V_OCSP_CERTSTATUS_GOOD)
-        {
-//        	printf("[OK]\n");
-        	continue;
-        }
-        else
-        {
-//        	printf("[NOK]\n");
-        	return -1;
-        }
-    }
-
-    return OCSP_CERT_STATUS_OK;
-}
-
-static int verify_issuer_and_signature(SSL *ssl, OCSP_RESPONSE *resp, STACK_OF(X509) *cert_chain, OCSP_BASICRESP **resp_in)
-{
-	int status = OCSP_CERT_STATUS_OK;
-	X509_STORE *store = NULL;
-	OCSP_BASICRESP *bs = NULL;
-
-	/* check ocsp response status */
-	status = OCSP_response_status(resp);
-	if (status != OCSP_RESPONSE_STATUS_SUCCESSFUL)
-	{
-		fprintf(stderr, "\nInvalid status: %s", OCSP_response_status_str(status));
-		return -1;
-	}
-
-	/* get OCSP_BASICRESP structure */
-	bs = OCSP_response_get1_basic(resp);
-	if (bs == NULL)
-	{
-		fprintf(stderr, "\nFunction 'OCSP_response_get1_basic' has failed!");
-		status = -1;
-		goto cleanup;
-	}
-
-    /* verify issuer's certificate and the signature of basic ocsp response */
-	SSL_CTX *ssl_ctx = SSL_get_SSL_CTX(ssl);
-	status = OCSP_basic_verify(bs, cert_chain, SSL_CTX_get_cert_store(ssl_ctx), 0);
-	if (status != 1)
-	{
-		fprintf(stderr, "\ncould not verify ocsp response");
-		status = -1;
-		goto cleanup;
-	}
-
-    if (store != NULL)
-    	X509_STORE_free(store);
-
-    *resp_in = bs;
-
-    return status;
-
-cleanup:
-    if (bs != NULL)
-    	OCSP_BASICRESP_free(bs);
-
-    if (store != NULL)
-    	X509_STORE_free(store);
-
-    return status;
-}
-
 static int ocsp_stapling_check_cb(SSL *ssl)
 {
-	char *ocsp_resp;
+	char *cert_status;
 	int chain_size = 0;
+	int cert_index = 0;
+	int num_of_resp = 0;
 	long ocsp_resp_len = 0;
-	OCSP_RESPONSE *stapled_resp = NULL;
+	SSL_CTX *ssl_ctx = NULL;
+	OCSP_RESPONSE *ocsp_resp = NULL;
+	OCSP_BASICRESP *basic_resp = NULL;
+	OCSP_SINGLERESP *single_resp = NULL;
 	STACK_OF(X509) *peer_cert_chain = NULL;
-	OCSP_BASICRESP *stapled_basic_resp = NULL;
+	int status = OCSP_CERT_STATUS_NOK;
 
 	/* check if sent ocsp request */
 	if (SSL_get_tlsext_status_type(ssl) != TLSEXT_STATUSTYPE_ocsp)
@@ -2239,7 +2164,7 @@ static int ocsp_stapling_check_cb(SSL *ssl)
     }
 
     /* get ocsp response */
-    ocsp_resp_len = SSL_get_tlsext_status_ocsp_resp(ssl, &ocsp_resp);
+    ocsp_resp_len = SSL_get_tlsext_status_ocsp_resp(ssl, &cert_status);
     if (ocsp_resp_len == -1)
     {
     	printf("- server did not send the stapled OCSP Response!\n");
@@ -2247,15 +2172,15 @@ static int ocsp_stapling_check_cb(SSL *ssl)
     }
 
     /* convert ocsp response from der to internal format */
-    stapled_resp = d2i_OCSP_RESPONSE(NULL, &ocsp_resp, ocsp_resp_len);
-    if (stapled_resp == NULL)
+    ocsp_resp = d2i_OCSP_RESPONSE(NULL, &cert_status, ocsp_resp_len);
+    if (ocsp_resp == NULL)
     {
     	printf("Function 'd2i_OCSP_RESPONSE' has failed!\n");
         return OCSP_CERT_STATUS_NOK;
     }
 
     print_cert_chain(ssl);
-    /* get peer certificate chain TLS connection */
+    /* get peer certificate chain from TLS connection */
     peer_cert_chain = SSL_get_peer_cert_chain(ssl);
     if (peer_cert_chain == NULL)
     {
@@ -2263,29 +2188,61 @@ static int ocsp_stapling_check_cb(SSL *ssl)
     }
     chain_size = sk_X509_num(peer_cert_chain);
 
-    /* verify issuer and signature */
-	if (verify_issuer_and_signature(ssl, stapled_resp, peer_cert_chain, &stapled_basic_resp) != OCSP_CERT_STATUS_OK)
+    /* check ocsp response status */
+	if (OCSP_response_status(ocsp_resp) != OCSP_RESPONSE_STATUS_SUCCESSFUL)
+	{
+		fprintf(stderr, "\nFunction 'OCSP_response_status' has failed!");
 		goto cleanup;
+	}
 
-	/* verify each revocation status ocsp response. */
-    if (verify_revocation_status(stapled_basic_resp) != OCSP_CERT_STATUS_OK)
-        goto cleanup;
+	/* get OCSP_BASICRESP structure */
+	basic_resp = OCSP_response_get1_basic(ocsp_resp);
+	if (basic_resp == NULL)
+	{
+		fprintf(stderr, "\nFunction 'OCSP_response_get1_basic' has failed!");
+		goto cleanup;
+	}
 
-    if (stapled_resp != NULL)
-        OCSP_RESPONSE_free(stapled_resp);
+	ssl_ctx = SSL_get_SSL_CTX(ssl);
+	if (OCSP_basic_verify(basic_resp, peer_cert_chain, SSL_CTX_get_cert_store(ssl_ctx), 0) != 1)
+	{
+		fprintf(stderr, "\ncould not verify ocsp response");
+		goto cleanup;
+	}
 
-    if (stapled_basic_resp != NULL)
-    	OCSP_BASICRESP_free(stapled_basic_resp);
+	/* verify each revocation status */
+    num_of_resp = OCSP_resp_count(basic_resp);
+    for (cert_index = 0; cert_index < num_of_resp; cert_index ++)
+    {
+    	single_resp = OCSP_resp_get0(basic_resp, cert_index);
+    	if (single_resp == NULL)
+    	{
+    		fprintf(stderr, "Function 'OCSP_resp_get0' has failed!");
+    		goto cleanup;
+    	}
 
-    return OCSP_CERT_STATUS_OK;
+        if (OCSP_single_get0_status(single_resp, NULL, NULL, NULL, NULL) == V_OCSP_CERTSTATUS_GOOD)
+        {
+        	printf("\n\t [OK]\n");
+        	continue;
+        }
+        else
+        {
+        	printf("\n\t [NOK]\n");
+        	status = OCSP_CERT_STATUS_NOK;
+        	break;
+        }
+    }
+    if (cert_index == num_of_resp)
+    	status = OCSP_CERT_STATUS_OK;
 
 cleanup:
 
-    if (stapled_resp != NULL)
-        OCSP_RESPONSE_free(stapled_resp);
+    if (ocsp_resp != NULL)
+        OCSP_RESPONSE_free(ocsp_resp);
 
-    if (stapled_basic_resp != NULL)
-        OCSP_BASICRESP_free(stapled_basic_resp);
+    if (basic_resp != NULL)
+        OCSP_BASICRESP_free(basic_resp);
 
-    return OCSP_CERT_STATUS_NOK;
+    return status;
 }
