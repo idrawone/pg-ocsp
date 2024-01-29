@@ -2173,7 +2173,7 @@ static int ocsp_response_check_cb(SSL *ssl)
     /* get peer certificate chain from tls connection */
     peer_cert_chain = SSL_get_peer_cert_chain(ssl);
     if (peer_cert_chain == NULL)
-        return OCSP_CERT_STATUS_NOK;
+    	goto cleanup;
     chain_size = sk_X509_num(peer_cert_chain);
 
     /* check ocsp response status */
