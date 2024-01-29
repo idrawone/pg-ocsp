@@ -2144,64 +2144,68 @@ void print_cert_chain(SSL *ssl)
 
 static int ocsp_response_check_cb(SSL *ssl)
 {
-	char *cert_status;
-	int chain_size = 0;
+	const unsigned char *resp;
+	long resp_len = 0;
 	int cert_index = 0;
 	int num_of_resp = 0;
-	long ocsp_resp_len = 0;
 	OCSP_RESPONSE *ocsp_resp = NULL;
 	OCSP_BASICRESP *basic_resp = NULL;
 	OCSP_SINGLERESP *single_resp = NULL;
-	STACK_OF(X509) *peer_cert_chain = NULL;
 	int status = OCSP_CERT_STATUS_NOK;
 
+	/*
+	 * step-1: retrieve ocsp response
+	 * refer to 'ocsp_resp_cb' in openssl/apps/s_client.c
+	 */
 	/* check if requested certificate status */
 	if (SSL_get_tlsext_status_type(ssl) != TLSEXT_STATUSTYPE_ocsp)
         return OCSP_CERT_STATUS_OK;
 
     /* check if got ocsp response */
-    ocsp_resp_len = SSL_get_tlsext_status_ocsp_resp(ssl, &cert_status);
-    if (ocsp_resp_len == -1)
-        return OCSP_CERT_STATUS_NOK;
+    resp_len = SSL_get_tlsext_status_ocsp_resp(ssl, &resp);
+    if (resp == NULL)
+    	goto cleanup; /* no ocsp respnse */
 
-    /* convert ocsp response from der to internal format */
-    ocsp_resp = d2i_OCSP_RESPONSE(NULL, &cert_status, ocsp_resp_len);
+    /* convert ocsp response to internal format */
+    ocsp_resp = d2i_OCSP_RESPONSE(NULL, &resp, resp_len);
     if (ocsp_resp == NULL)
-        return OCSP_CERT_STATUS_NOK;
+    	goto cleanup; /* failed to convert ocsp response */
 
     print_cert_chain(ssl);
-    /* get peer certificate chain from tls connection */
-    peer_cert_chain = SSL_get_peer_cert_chain(ssl);
-    if (peer_cert_chain == NULL)
-    	goto cleanup;
-    chain_size = sk_X509_num(peer_cert_chain);
-
-    /* check ocsp response status */
+    /*
+     * step-2: verify the basic of ocsp response
+     * refer to 'ocsp_main' in openssl/apps/ocsp.c
+     */
 	if (OCSP_response_status(ocsp_resp) != OCSP_RESPONSE_STATUS_SUCCESSFUL)
-		goto cleanup;
+		goto cleanup; /* ocsp response not successful */
 
 	/* get ocsp basic response structure */
 	basic_resp = OCSP_response_get1_basic(ocsp_resp);
 	if (basic_resp == NULL)
-		goto cleanup;
+		goto cleanup; /* failed to get basic ocsp response */
 
 	/* perform basic ocsp response verify */
-	if (OCSP_basic_verify(basic_resp, peer_cert_chain, SSL_CTX_get_cert_store(SSL_get_SSL_CTX(ssl)), 0) != 1)
-		goto cleanup;
+	if (OCSP_basic_verify(basic_resp, SSL_get_peer_cert_chain(ssl),
+			SSL_CTX_get_cert_store(SSL_get_SSL_CTX(ssl)), 0) != 1)
+		goto cleanup; /* basic verification failed */
 
-	/* verify all revocation status */
+	/*
+	 * step-3: verify each revocation status
+	 * ref to 'ct_extract_ocsp_response_scts' in openssl/ssl/ssl_lib.c
+	 */
     num_of_resp = OCSP_resp_count(basic_resp);
     for (cert_index = 0; cert_index < num_of_resp; cert_index ++)
     {
     	single_resp = OCSP_resp_get0(basic_resp, cert_index);
     	if (single_resp == NULL)
-    		goto cleanup;
+    		goto cleanup; /* failed to get single response */
 
-        if (OCSP_single_get0_status(single_resp, NULL, NULL, NULL, NULL) == V_OCSP_CERTSTATUS_GOOD)
+        if (OCSP_single_get0_status(single_resp, NULL, NULL, NULL, NULL)
+        		== V_OCSP_CERTSTATUS_GOOD)
         	continue; /* status is good */
         else
         {
-        	/* status is revoked/unknown */
+        	/* status is revoked or unknown */
         	status = OCSP_CERT_STATUS_NOK;
         	break;
         }
