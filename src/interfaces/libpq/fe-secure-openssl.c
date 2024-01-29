@@ -2178,22 +2178,16 @@ static int ocsp_response_check_cb(SSL *ssl)
 
     /* check ocsp response status */
 	if (OCSP_response_status(ocsp_resp) != OCSP_RESPONSE_STATUS_SUCCESSFUL)
-	{
 		goto cleanup;
-	}
 
 	/* get ocsp basic response structure */
 	basic_resp = OCSP_response_get1_basic(ocsp_resp);
 	if (basic_resp == NULL)
-	{
 		goto cleanup;
-	}
 
 	/* perform basic ocsp response verify */
 	if (OCSP_basic_verify(basic_resp, peer_cert_chain, SSL_CTX_get_cert_store(SSL_get_SSL_CTX(ssl)), 0) != 1)
-	{
 		goto cleanup;
-	}
 
 	/* verify all revocation status */
     num_of_resp = OCSP_resp_count(basic_resp);
@@ -2201,18 +2195,13 @@ static int ocsp_response_check_cb(SSL *ssl)
     {
     	single_resp = OCSP_resp_get0(basic_resp, cert_index);
     	if (single_resp == NULL)
-    	{
     		goto cleanup;
-    	}
 
         if (OCSP_single_get0_status(single_resp, NULL, NULL, NULL, NULL) == V_OCSP_CERTSTATUS_GOOD)
-        {
-        	/* status is good */
-        	continue;
-        }
+        	continue; /* status is good */
         else
         {
-        	/* status is revoked */
+        	/* status is revoked/unknown */
         	status = OCSP_CERT_STATUS_NOK;
         	break;
         }
@@ -2221,7 +2210,6 @@ static int ocsp_response_check_cb(SSL *ssl)
     	status = OCSP_CERT_STATUS_OK;
 
 cleanup:
-
     if (ocsp_resp != NULL)
         OCSP_RESPONSE_free(ocsp_resp);
 
